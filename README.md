@@ -282,3 +282,5 @@ This project intentionally balances real-world architecture patterns with clarit
 
 ### Q5: How does Kafka in KRaft mode differ from Kafka with ZooKeeper?
 > **Answer**: KRaft (Kafka Raft Metadata mode) manages cluster metadata and consensus directly inside Kafka using an event-driven Raft protocol, eliminating the dependency on Apache ZooKeeper. This reduces operational complexity, accelerates metadata propagation, speeds up controller failover times, and simplifies containerized deployments.
+#   o r d e r f l o w  
+ 
