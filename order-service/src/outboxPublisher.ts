@@ -35,6 +35,64 @@ const producer = kafka.producer();
 
 let isConnected = false;
 
+export async function publishBatch(): Promise<void> {
+  try {
+    // Fetch a small batch of unpublished events, oldest first.
+    // LIMIT 10 prevents a huge batch if many events pile up.
+    const result = await pool.query(
+      `SELECT id, event_type, aggregate_id, payload
+         FROM outbox_events
+        WHERE published_at IS NULL
+        ORDER BY id
+        LIMIT 10`
+    );
+
+    if (result.rows.length === 0) return;
+
+    if (!isConnected) {
+      try {
+        await producer.connect();
+        isConnected = true;
+        console.log('Outbox publisher: Kafka producer connected');
+      } catch (err) {
+        console.error('Outbox publisher: Kafka unavailable, leaving events unpublished');
+        return;
+      }
+    }
+
+    for (const event of result.rows) {
+      try {
+        // Publish the event payload to the Kafka topic.
+        // The key is the aggregate_id (order id) so that all events for the
+        // same order land on the same partition (ordering guarantee).
+        await producer.send({
+          topic:    'order.created',
+          messages: [{
+            key:   String(event.aggregate_id),
+            value: JSON.stringify(event.payload),
+          }],
+        });
+        console.log(`[OutboxPublisher] Published outbox event id=${event.id} (order_id=${event.aggregate_id}) to Kafka topic 'order.created'`);
+
+        // Mark published so we don't send it again
+        await pool.query(
+          'UPDATE outbox_events SET published_at = now() WHERE id = $1',
+          [event.id]
+        );
+
+        console.log(`[OutboxPublisher] Marked outbox event id=${event.id} published_at = now()`);
+      } catch (err) {
+        // Kafka unavailable or publish failed — leave published_at NULL
+        // and retry on the next interval. Do NOT crash the server.
+        console.error(`[OutboxPublisher] Failed to publish event id=${event.id}:`, err);
+      }
+    }
+  } catch (err) {
+    // DB query failed — log and continue
+    console.error('Outbox publisher: DB query failed:', err);
+  }
+}
+
 export async function startOutboxPublisher(): Promise<void> {
   try {
     await producer.connect();
@@ -44,61 +102,5 @@ export async function startOutboxPublisher(): Promise<void> {
     console.warn('Outbox publisher: Kafka not ready yet, will retry connection when events arrive');
   }
 
-  setInterval(async () => {
-    try {
-      // Fetch a small batch of unpublished events, oldest first.
-      // LIMIT 10 prevents a huge batch if many events pile up.
-      const result = await pool.query(
-        `SELECT id, event_type, aggregate_id, payload
-           FROM outbox_events
-          WHERE published_at IS NULL
-          ORDER BY id
-          LIMIT 10`
-      );
-
-      if (result.rows.length === 0) return;
-
-      if (!isConnected) {
-        try {
-          await producer.connect();
-          isConnected = true;
-          console.log('Outbox publisher: Kafka producer connected');
-        } catch (err) {
-          console.error('Outbox publisher: Kafka unavailable, leaving events unpublished');
-          return;
-        }
-      }
-
-      for (const event of result.rows) {
-        try {
-          // Publish the event payload to the Kafka topic.
-          // The key is the aggregate_id (order id) so that all events for the
-          // same order land on the same partition (ordering guarantee).
-          await producer.send({
-            topic:    'order.created',
-            messages: [{
-              key:   String(event.aggregate_id),
-              value: JSON.stringify(event.payload),
-            }],
-          });
-          console.log(`[OutboxPublisher] Published outbox event id=${event.id} (order_id=${event.aggregate_id}) to Kafka topic 'order.created'`);
-
-          // Mark published so we don't send it again
-          await pool.query(
-            'UPDATE outbox_events SET published_at = now() WHERE id = $1',
-            [event.id]
-          );
-
-          console.log(`[OutboxPublisher] Marked outbox event id=${event.id} published_at = now()`);
-        } catch (err) {
-          // Kafka unavailable or publish failed — leave published_at NULL
-          // and retry on the next interval. Do NOT crash the server.
-          console.error(`[OutboxPublisher] Failed to publish event id=${event.id}:`, err);
-        }
-      }
-    } catch (err) {
-      // DB query failed — log and continue
-      console.error('Outbox publisher: DB query failed:', err);
-    }
-  }, 2000); // poll every 2 seconds
+  setInterval(publishBatch, 2000); // poll every 2 seconds
 }
