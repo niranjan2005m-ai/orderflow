@@ -72,6 +72,7 @@ export async function reserveStock(
   callback: grpc.sendUnaryData<unknown>
 ): Promise<void> {
   const { product_id, quantity } = call.request;
+  console.log(`[InventoryService] ReserveStock received: product_id=${product_id}, quantity=${quantity}`);
 
   // Decrement stock in one atomic statement; if stock < quantity the WHERE
   // clause won't match and rowCount will be 0.
@@ -86,6 +87,7 @@ export async function reserveStock(
 
   if (result.rowCount === 0) {
     // gRPC FAILED_PRECONDITION is the right code for "business rule violated"
+    console.warn(`[InventoryService] ReserveStock failed: insufficient stock for product ${product_id}`);
     callback({
       code:    grpc.status.FAILED_PRECONDITION,
       message: `Insufficient stock for product ${product_id}`,
@@ -93,6 +95,7 @@ export async function reserveStock(
     return;
   }
 
+  console.log(`[InventoryService] ReserveStock succeeded: reserved ${quantity} units of product ${product_id}`);
   callback(null, { price: parseFloat(result.rows[0].price) });
 }
 

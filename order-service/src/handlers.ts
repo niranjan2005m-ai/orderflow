@@ -53,15 +53,19 @@ export async function createOrder(
   callback: grpc.sendUnaryData<unknown>
 ): Promise<void> {
   const { product_id, quantity, customer_name } = call.request;
+  console.log(`[OrderService] CreateOrder received: customer="${customer_name}", product_id=${product_id}, quantity=${quantity}`);
 
   // Step 1: Reserve stock over gRPC (this also gives us the unit price)
   let price: number;
   try {
+    console.log(`[OrderService] Calling inventory-service.ReserveStock(product_id=${product_id}, quantity=${quantity})`);
     const reservation = await reserveStock(product_id, quantity);
     price = reservation.price;
+    console.log(`[OrderService] Stock reserved at price=${price}. Starting DB transaction...`);
   } catch (err: unknown) {
     // If inventory-service returned FAILED_PRECONDITION, forward it as-is
     const grpcErr = err as grpc.ServiceError;
+    console.warn(`[OrderService] Stock reservation failed: ${grpcErr.message}`);
     callback({
       code:    grpcErr.code ?? grpc.status.INTERNAL,
       message: grpcErr.message,
@@ -97,18 +101,20 @@ export async function createOrder(
 
     // Insert the outbox event in the SAME transaction.
     // published_at stays NULL until the outbox publisher loop runs.
-    await client.query(
+    const outboxResult = await client.query<{ id: number }>(
       `INSERT INTO outbox_events (event_type, aggregate_id, payload)
-       VALUES ($1, $2, $3)`,
+       VALUES ($1, $2, $3)
+       RETURNING id`,
       ['order.created', order.id, JSON.stringify(payload)]
     );
 
     await client.query('COMMIT');
+    console.log(`[OrderService] Transaction COMMITTED: inserted order id=${order.id} and outbox event id=${outboxResult.rows[0].id}`);
 
     callback(null, rowToResponse(order));
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('CreateOrder transaction failed, rolled back:', err);
+    console.error('[OrderService] CreateOrder transaction failed, rolled back:', err);
     callback({ code: grpc.status.INTERNAL, message: 'Failed to create order' });
   } finally {
     client.release(); // return the client to the pool

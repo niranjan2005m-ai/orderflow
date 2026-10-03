@@ -28,7 +28,7 @@ import { pool } from './db';
 
 const kafka = new Kafka({
   clientId: process.env.KAFKA_CLIENT_ID || 'order-service',
-  brokers:  [process.env.KAFKA_BROKER   || 'localhost:9092'],
+  brokers:  [process.env.KAFKA_BROKER   || 'localhost:9094'],
 });
 
 const producer = kafka.producer();
@@ -81,6 +81,7 @@ export async function startOutboxPublisher(): Promise<void> {
               value: JSON.stringify(event.payload),
             }],
           });
+          console.log(`[OutboxPublisher] Published outbox event id=${event.id} (order_id=${event.aggregate_id}) to Kafka topic 'order.created'`);
 
           // Mark published so we don't send it again
           await pool.query(
@@ -88,11 +89,11 @@ export async function startOutboxPublisher(): Promise<void> {
             [event.id]
           );
 
-          console.log(`Outbox publisher: published event id=${event.id}, order_id=${event.aggregate_id}`);
+          console.log(`[OutboxPublisher] Marked outbox event id=${event.id} published_at = now()`);
         } catch (err) {
           // Kafka unavailable or publish failed — leave published_at NULL
           // and retry on the next interval. Do NOT crash the server.
-          console.error(`Outbox publisher: failed to publish event id=${event.id}:`, err);
+          console.error(`[OutboxPublisher] Failed to publish event id=${event.id}:`, err);
         }
       }
     } catch (err) {
